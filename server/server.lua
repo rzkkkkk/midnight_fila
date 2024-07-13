@@ -19,49 +19,57 @@ local function getIdentifiers(source)
 end
 
 -- Function to update database with player package data
-local function updatePlayerPackages(steamId, packageId, priority)
-    MySQL.Async.execute('REPLACE INTO player_packages (steam_id, package_id, priority) VALUES (@steam_id, @package_id, @priority)', {
+local function updatePlayerPackages(steamId, discordId, packageId, priority)
+    MySQL.Async.execute('REPLACE INTO player_packages (steam_id, discord_id, package_id, priority) VALUES (@steam_id, @discord_id, @package_id, @priority)', {
         ['@steam_id'] = steamId,
+        ['@discord_id'] = discordId,
         ['@package_id'] = packageId,
         ['@priority'] = priority
     }, function(rowsChanged)
         if rowsChanged > 0 then
-            print("Updated package data for " .. steamId)
+            print("Updated package data for " .. (steamId or discordId))
         end
     end)
 end
 
--- Function to fetch Tebex purchases and update queue priorities
-local function updateQueuePriorities()
-    PerformHttpRequest("https://plugin.tebex.io/information", function(statusCode, response, headers)
-        if statusCode == 200 then
-            local data = json.decode(response)
-            for _, player in ipairs(data.players) do
-                local steamId = player.identifiers[1]
-                local highestPriority = 0
+-- Handle incoming Tebex webhook
+RegisterNetEvent('tebex:purchase')
+AddEventHandler('tebex:purchase', function(purchaseData)
+    local steamId = nil
+    local discordId = nil
+    local highestPriority = 0
 
-                for packageId, priority in pairs(Config.PriorityPackages) do
-                    if player.package_id == packageId and priority > highestPriority then
-                        highestPriority = priority
-                    end
-                end
-
-                if highestPriority > 0 then
-                    priorities[steamId] = highestPriority
-                    updatePlayerPackages(steamId, player.package_id, highestPriority)
-                end
-            end
-        else
-            print("Failed to fetch Tebex data")
+    for _, id in ipairs(purchaseData.identifiers) do
+        if string.find(id, "steam:") then
+            steamId = id
+        elseif string.find(id, "discord:") then
+            discordId = id
         end
-    end, "GET", "", { ["X-Tebex-Secret"] = tebexSecretKey })
-end
+    end
+
+    for packageId, priority in pairs(Config.PriorityPackages) do
+        if purchaseData.package_id == packageId and priority > highestPriority then
+            highestPriority = priority
+        end
+    end
+
+    if highestPriority > 0 then
+        local identifier = steamId or discordId
+        if identifier then
+            priorities[identifier] = highestPriority
+            updatePlayerPackages(steamId, discordId, purchaseData.package_id, highestPriority)
+        end
+    end
+end)
 
 -- Function to load priorities from database
 local function loadPrioritiesFromDatabase()
     MySQL.Async.fetchAll('SELECT * FROM player_packages', {}, function(results)
         for _, row in ipairs(results) do
-            priorities[row.steam_id] = row.priority
+            local identifier = row.steam_id or row.discord_id
+            if identifier then
+                priorities[identifier] = row.priority
+            end
         end
     end)
 end
@@ -72,7 +80,23 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
     deferrals.defer()
 
     local identifiers = getIdentifiers(source)
-    local steamId = identifiers[1]
+    local steamId = nil
+    local discordId = nil
+
+    for _, id in ipairs(identifiers) do
+        if string.find(id, "steam:") then
+            steamId = id
+        elseif string.find(id, "discord:") then
+            discordId = id
+        end
+    end
+
+    local identifier = steamId or discordId
+
+    if not identifier then
+        deferrals.done("Failed to retrieve identifiers. Please restart your game and try again.")
+        return
+    end
 
     -- Check if queue is full
     if #queue >= Config.MaxQueueSize then
@@ -81,7 +105,7 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
     end
 
     -- Check for priority
-    local priority = priorities[steamId] or 0
+    local priority = priorities[identifier] or 0
 
     -- Add player to the queue
     table.insert(queue, { id = source, priority = priority })
@@ -94,7 +118,6 @@ end)
 -- Periodically update queue priorities from Tebex
 CreateThread(function()
     while true do
-        updateQueuePriorities()
         Wait(60000) -- Update every 60 seconds
     end
 end)
