@@ -1,4 +1,3 @@
--- http_server.lua
 local json = require "json"
 
 local function handleTebexPurchase(req, res)
@@ -9,11 +8,26 @@ local function handleTebexPurchase(req, res)
 
     req.on("end", function()
         local purchaseData = json.decode(body)
-        TriggerEvent('tebex:purchase', purchaseData)
-        res.writeHead(200)
+        if purchaseData then
+            TriggerEvent('tebex:purchase', purchaseData)
+        end
+        res.writeHead(200, { ["Content-Type"] = "text/plain" })
         res.write("OK")
         res.send()
     end)
 end
 
-RegisterCommand('tebex_purchase', handleTebexPurchase)
+-- Define endpoint for Tebex purchase webhook
+AddEventHandler('onResourceStart', function(resourceName)
+    if resourceName == GetCurrentResourceName() then
+        SetHttpHandler(function(req, res)
+            if req.path == "/tebex_purchase" and req.method == "POST" then
+                handleTebexPurchase(req, res)
+            else
+                res.writeHead(404, { ["Content-Type"] = "text/plain" })
+                res.write("Not Found")
+                res.send()
+            end
+        end)
+    end
+end)

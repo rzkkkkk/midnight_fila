@@ -1,4 +1,3 @@
--- server.lua
 local queue = {}
 local priorities = Config.Priority
 
